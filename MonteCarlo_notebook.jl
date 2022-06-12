@@ -167,10 +167,13 @@ end
 plot_mc_prediction("MSFT", duration = 1*365, num_sim = 1000, days_to_sim = 90)
 
 # ╔═╡ 4c10f658-64f9-4c18-9a73-8bd6ad5a44ff
-plot_mc_prediction("AAPL", duration = 1*365, num_sim = 1000, days_to_sim = 90)
+plot_mc_prediction("AAPL", duration = 1*365, num_sim = 1000, days_to_sim = 180)
 
 # ╔═╡ 0a98ae67-26c7-4bdb-af24-07be0d222c0a
-plot_mc_prediction("AMD", duration = 1*365, num_sim = 1000, days_to_sim = 90)
+plot_mc_prediction("AMD", duration = 1*365, num_sim = 1000, days_to_sim = 180)
+
+# ╔═╡ 4fc4819f-5994-479d-b01f-bf1acb4d4fb9
+plot_mc_prediction("COIN", duration = 250, num_sim = 1000, days_to_sim = 180)
 
 # ╔═╡ 00000000-0000-0000-0000-000000000001
 PLUTO_PROJECT_TOML_CONTENTS = """
@@ -759,5 +762,6 @@ uuid = "3f19e933-33d8-53b3-aaab-bd5110c3b7a0"
 # ╠═8398a7ec-650c-4d1a-a63f-9d70d0ae6355
 # ╠═4c10f658-64f9-4c18-9a73-8bd6ad5a44ff
 # ╠═0a98ae67-26c7-4bdb-af24-07be0d222c0a
+# ╠═4fc4819f-5994-479d-b01f-bf1acb4d4fb9
 # ╟─00000000-0000-0000-0000-000000000001
 # ╟─00000000-0000-0000-0000-000000000002
