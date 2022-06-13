@@ -1,5 +1,5 @@
 ### A Pluto.jl notebook ###
-# v0.17.7
+# v0.18.4
 
 using Markdown
 using InteractiveUtils
@@ -22,7 +22,12 @@ md"
 # ╔═╡ 64fa2b95-efa5-4110-a476-fe51fb49bb63
 begin
 	client = AlphaVantage.GLOBAL[]
-	key_dict = JSON.parsefile(raw"C:\Users\vnegi\Documents\VNEG_alphavantage_key.json.txt")
+	key_dict = ""
+	if Sys.iswindows()
+		key_dict = JSON.parsefile(raw"C:\Users\vnegi\Documents\VNEG_alphavantage_key.json.txt")
+	else
+		key_dict = JSON.parsefile("/home/vikas/Documents/Input_JSON/VNEG_alphavantage_key.json")
+	end
 	client.key = key_dict["api_key"]
 end
 
@@ -118,13 +123,23 @@ function run_mc_simulation(df_close::DataFrame, num_sim::Int64,
                            std_dev::Float64)
 	
 	df_predict  = DataFrame()	
-	last_date   = df_close[!, :Date][end]
+	new_date    = df_close[!, :Date][end]	
 
 	# Generate future dates only once
 	dates = [df_close[!, :Date][end]]
 	for j = 1:days_to_sim
-		new_date = last_date + Dates.Day(j)
+
+		new_date += Dates.Day(1)
+		
+		# Prices are not reported for weekends
+		if Dates.dayname(new_date) == "Saturday"
+			new_date = new_date + Dates.Day(2)
+		elseif Dates.dayname(new_date) == "Sunday"
+			new_date = new_date + Dates.Day(1)
+		end
+
 		push!(dates, new_date)
+				
 	end	
 	
 	for i = 1:num_sim	
@@ -189,7 +204,22 @@ function run_mc_simulation_exp(df_close::DataFrame, num_sim::Int64,
 end
 
 # ╔═╡ 686340c1-15a8-4d3a-91b6-3e4020a7e93f
-df_predict = run_mc_simulation(df_close, 5, 30, μ, σ)
+df_predict = run_mc_simulation(df_close, 5, 11, μ, σ)
+
+# ╔═╡ effbb61d-2a29-4909-80e3-caf0626daee3
+function get_mc_avg(df_predict::DataFrame)
+
+	close_avg = Float64[]
+	for row in eachrow(df_predict)
+		avg_price = Statistics.mean(row[2:end])
+		push!(close_avg, avg_price)
+	end
+
+	return DataFrame(Date = df_predict[!, :Date], close_avg = close_avg)
+end	
+
+# ╔═╡ fc9d3eb1-5344-46a1-9d7b-b9076449353c
+
 
 # ╔═╡ 6f15d7a5-b565-4bbd-948b-b02d7d489d3b
 md"
@@ -202,26 +232,41 @@ function plot_mc_prediction(stock_name::String; duration::Int64 = 180,
                             num_sim::Int64 = 200, days_to_sim::Int64 = 30)
 
 	results = get_stock_change(stock_name, duration)
-	df_close, μ, σ = results[1], results[2], results[3]		
+	df_close, μ, σ = results[1], results[2], results[3]	
 
+	# Get predictions from MC simulations
 	df_predict = run_mc_simulation(df_close, num_sim, days_to_sim, μ, σ)
 
-	predicted_closing_price = sum(df_predict[end, :][2:end])/num_sim
+	# Get average price for all MC simulations
+	df_avg = get_mc_avg(df_predict)
+	
+	predicted_closing_price = df_avg[!, :close_avg][end]
 	known_closing_price     = df_close[!, :close][end]
 
 	predicted_change = ((predicted_closing_price - 
-	                       known_closing_price)/known_closing_price) * 100
+	                     known_closing_price)/known_closing_price) * 100
+
+	# Add average price column to DataFrame with predicted prices
+	insertcols!(df_predict, :Date, :close_avg => df_avg[!, :close_avg], after = true)
 	
-	sdf_predict = stack(df_predict, Not([:Date]), variable_name = :sim_number)
+	sdf_predict = stack(df_predict, Not([:Date, :close_avg]), 
+		                variable_name = :sim_number)
 
 	figure = sdf_predict |>
 
 	@vlplot(:line, 
 	        x = {:Date, "axis" = {"title" = "Time [days]", "labelFontSize" = 12, "titleFontSize" = 14}, "type" = "temporal"},
-	        y = {:value, "axis" = {"title" = "Price [USD]", "labelFontSize" = 12, "titleFontSize" = 14}},
 	        width = 750, height = 500, 
-			"title" = {"text" = "$(stock_name) avg. predicted price is $(round(predicted_closing_price, digits = 2)) with a change of $(round(predicted_change, digits = 2)) %, calculated after $(days_to_sim) days", "fontSize" = 16},
-			color = :sim_number)
+			"title" = {"text" = "$(stock_name) predicted price is $(round(predicted_closing_price, digits = 2)), hist. duration = $(duration) days, change = $(round(predicted_change, digits = 2)) %, calculated after $(days_to_sim) days", "fontSize" = 16},
+			) +
+
+	@vlplot(:line, 
+	        y = {:value, "axis" = {"title" = "Predicted price [USD]", 
+			"labelFontSize" = 12, "titleFontSize" = 14}}, 
+	        color = :sim_number) +
+
+	@vlplot(mark = {:line, point = false, strokeWidth = 5},	        
+	        y = {:close_avg, "scale" = {"zero" = true}})	
 
 	return figure
 end	
@@ -256,16 +301,16 @@ function plot_mc_prediction_exp(stock_name::String; duration::Int64 = 180,
 end	
 
 # ╔═╡ 8398a7ec-650c-4d1a-a63f-9d70d0ae6355
-plot_mc_prediction("MSFT", duration = 1*365, num_sim = 1000, days_to_sim = 90)
+plot_mc_prediction("MSFT", duration = 5*365, num_sim = 100, days_to_sim = 365)
 
 # ╔═╡ aa6d8740-339f-40ac-a3b9-59fc3d754c72
-plot_mc_prediction("MSFT", duration = 2*365, num_sim = 1000, days_to_sim = 90)
+#plot_mc_prediction("MSFT", duration = 2*365, num_sim = 1000, days_to_sim = 90)
 
 # ╔═╡ 8d538a46-ae6c-433f-b684-39f3e4c2839f
 plot_mc_prediction_exp("MSFT", duration = 1*365, num_sim = 1000, days_to_sim = 90)
 
 # ╔═╡ 610ea9a1-f73d-4723-ad10-5673894da725
-plot_mc_prediction_exp("MSFT", duration = 2*365, num_sim = 1000, days_to_sim = 90)
+#plot_mc_prediction_exp("MSFT", duration = 2*365, num_sim = 1000, days_to_sim = 90)
 
 # ╔═╡ 4c10f658-64f9-4c18-9a73-8bd6ad5a44ff
 #plot_mc_prediction("AAPL", duration = 1*365, num_sim = 1000, days_to_sim = 180)
@@ -278,7 +323,7 @@ plot_mc_prediction_exp("MSFT", duration = 2*365, num_sim = 1000, days_to_sim = 9
 
 # ╔═╡ dcb81a30-b89b-4f4e-a49e-7132d9489dad
 md"
-### Plot final distribution
+### Plot final price distribution
 ---
 "
 
@@ -320,13 +365,136 @@ function plot_mc_distribution(stock_name::String; duration::Int64 = 180,
 end	
 
 # ╔═╡ c4e0fb37-3010-4545-ad2f-49128c22b27d
-plot_mc_distribution("MSFT", duration = 1*365, num_sim = 10_000, days_to_sim = 90)
+#plot_mc_distribution("MSFT", duration = 1*365, num_sim = 10_000, days_to_sim = 90)
 
 # ╔═╡ f87be5e1-c992-48bd-81d1-872d17514886
-plot_mc_distribution("MSFT", duration = 2*365, num_sim = 10_000, days_to_sim = 90)
+#plot_mc_distribution("MSFT", duration = 2*365, num_sim = 10_000, days_to_sim = 90)
 
 # ╔═╡ e635c722-bda3-467f-bebe-a3a97a5e0326
-plot_mc_distribution("MSFT", duration = 5*365, num_sim = 10_000, days_to_sim = 90)
+#plot_mc_distribution("MSFT", duration = 5*365, num_sim = 10_000, days_to_sim = 90)
+
+# ╔═╡ 8e6a9a18-a1c5-42b8-a5b6-0ee66d79b3aa
+md"
+### Backtesting MC prediction
+---
+"
+
+# ╔═╡ 4c2878ee-5a0b-4f67-aebd-ecd77919e200
+function get_stock_change_bt(stock_name::String, duration::Int64,
+	                         backtest::Int64)
+
+	raw_data = time_series_daily(stock_name, datatype = "csv", outputsize = "full")
+	df_raw = raw_to_df(raw_data)
+
+	rows, cols = size(df_raw)
+	@assert duration + backtest < rows "Input duration + backtest is larger than available data"
+
+	df_duration = df_raw[end-backtest-duration:end-backtest, :]
+
+	change = ((df_duration[!, :close][2:end] .- 
+               df_duration[!, :close][1:end-1]) ./ 
+	           df_duration[!, :close][1:end-1]) * 100
+
+	μ = Statistics.mean(change)
+	σ = Statistics.std(change)
+
+	df_close_bt = select(df_duration, [:Date, :close])
+	df_raw_bt   = select(df_raw, [:Date, :close]) 
+
+	return df_close_bt, df_raw_bt, μ, σ
+end	
+
+# ╔═╡ 5d27d50e-1b8b-450f-988f-bb94153e3b4d
+function run_mc_simulation_bt(df_close::DataFrame, df_raw::DataFrame,
+	                          num_sim::Int64, days_to_sim::Int64, mean::Float64,
+                              std_dev::Float64)
+	
+	df_predict  = DataFrame()	
+	
+	dates = df_raw[!, :Date][end-days_to_sim:end]	
+	
+	for i = 1:num_sim	
+
+		close_price = [df_close[!, :close][end]]	    
+		
+		for j = 1:days_to_sim
+			change_in_percentage = rand(Normal(mean, std_dev), 1)[1]
+			new_close_price = close_price[end] * (1 + change_in_percentage/100)
+			push!(close_price, new_close_price)
+		end
+
+		if isempty(df_predict)
+			df_predict = DataFrame("Date" => dates, "close_$(i)" => close_price)
+		else
+			df_to_join = DataFrame("Date" => dates, "close_$(i)" => close_price)
+			df_predict = innerjoin(df_predict, df_to_join, on = :Date)
+		end
+		
+	end
+
+	insertcols!(df_predict, :Date, 
+		        :close_actual => Float64.(df_raw[!, :close][end-days_to_sim:end]),
+	            after = true)
+
+	return df_predict	
+end
+
+# ╔═╡ 48c0a535-8163-46a4-bb1f-58ce5d67aeb0
+function get_mc_avg_bt(df_predict::DataFrame)
+
+	close_avg = Float64[]
+	for row in eachrow(df_predict)
+		avg_price = Statistics.mean(row[3:end])
+		push!(close_avg, avg_price)
+	end
+
+	df_avg_bt = DataFrame(Date = df_predict[!, :Date], 
+		                  close_avg = close_avg,
+	                      close_actual = df_predict[!, :close_actual])
+
+	return df_avg_bt
+end	
+
+# ╔═╡ 5343d494-caa6-4dbf-aa3f-3aaccf3b4013
+df_close_bt = get_stock_change_bt("AAPL", 20, 5)[1];
+
+# ╔═╡ 30dde1da-33aa-4b3e-a4ce-48c158238615
+df_raw_bt = get_stock_change_bt("AAPL", 20, 5)[2];
+
+# ╔═╡ 26c13a9d-d378-4101-b5d0-ba1d5f65ab5b
+df_predict_bt = run_mc_simulation_bt(df_close_bt, df_raw_bt, 5, 5, μ, σ)
+
+# ╔═╡ 00b556e6-015c-4d0f-9d36-8e9de84c824c
+df_avg_bt = get_mc_avg_bt(df_predict_bt);
+
+# ╔═╡ 9548e8b3-460d-4e3c-9ba6-11ae7ab2d066
+function plot_mc_prediction_bt(stock_name::String; duration::Int64 = 180,
+                               backtest::Int64 = 30, num_sim::Int64 = 200)
+
+	results = get_stock_change_bt(stock_name, duration, backtest)
+	df_close_bt, df_raw_bt, μ, σ = results[1], results[2], results[3], results[4]	
+
+	df_predict_bt = run_mc_simulation_bt(df_close_bt, df_raw_bt, 
+		                                 num_sim, backtest, μ, σ)
+
+	df_avg_bt = get_mc_avg_bt(df_predict_bt)
+	
+	sdf_predict = stack(df_avg_bt, Not([:Date]), variable_name = :close_data)
+
+	figure = sdf_predict |>
+
+	@vlplot(mark = {:line, point = true}, 
+	        x = {:Date, "axis" = {"title" = "Time [days]", "labelFontSize" = 12, "titleFontSize" = 14}, "type" = "temporal"},
+	        y = {:value, "axis" = {"title" = "Price [USD]", "labelFontSize" = 12, "titleFontSize" = 14}, "type" = "quantitative", "scale" = {"zero" = false}},
+	        width = 750, height = 500, 
+			"title" = {"text" = "$(stock_name) avg. predicted price vs actual price backtested for $(backtest) days" , "fontSize" = 16},
+			color = :close_data)
+
+	return figure
+end	
+
+# ╔═╡ a6a8ae09-87cd-4f93-8ea7-fb10c92270bb
+plot_mc_prediction_bt("AAPL", duration = 5*365, backtest = 365, num_sim = 2000)
 
 # ╔═╡ 00000000-0000-0000-0000-000000000001
 PLUTO_PROJECT_TOML_CONTENTS = """
@@ -912,6 +1080,8 @@ uuid = "3f19e933-33d8-53b3-aaab-bd5110c3b7a0"
 # ╟─19a5209f-2693-42a3-8c3a-10201c6c551a
 # ╟─242433de-5a81-4f3b-87f3-40efc7ac2056
 # ╠═686340c1-15a8-4d3a-91b6-3e4020a7e93f
+# ╟─effbb61d-2a29-4909-80e3-caf0626daee3
+# ╠═fc9d3eb1-5344-46a1-9d7b-b9076449353c
 # ╟─6f15d7a5-b565-4bbd-948b-b02d7d489d3b
 # ╟─ee9081ad-132f-4d85-9c69-0a6a26594e91
 # ╟─087b7abe-df05-4e63-9d3b-4289f58d9c4a
@@ -927,5 +1097,15 @@ uuid = "3f19e933-33d8-53b3-aaab-bd5110c3b7a0"
 # ╠═c4e0fb37-3010-4545-ad2f-49128c22b27d
 # ╠═f87be5e1-c992-48bd-81d1-872d17514886
 # ╠═e635c722-bda3-467f-bebe-a3a97a5e0326
+# ╟─8e6a9a18-a1c5-42b8-a5b6-0ee66d79b3aa
+# ╟─4c2878ee-5a0b-4f67-aebd-ecd77919e200
+# ╟─5d27d50e-1b8b-450f-988f-bb94153e3b4d
+# ╟─48c0a535-8163-46a4-bb1f-58ce5d67aeb0
+# ╠═5343d494-caa6-4dbf-aa3f-3aaccf3b4013
+# ╠═30dde1da-33aa-4b3e-a4ce-48c158238615
+# ╠═26c13a9d-d378-4101-b5d0-ba1d5f65ab5b
+# ╠═00b556e6-015c-4d0f-9d36-8e9de84c824c
+# ╟─9548e8b3-460d-4e3c-9ba6-11ae7ab2d066
+# ╠═a6a8ae09-87cd-4f93-8ea7-fb10c92270bb
 # ╟─00000000-0000-0000-0000-000000000001
 # ╟─00000000-0000-0000-0000-000000000002
