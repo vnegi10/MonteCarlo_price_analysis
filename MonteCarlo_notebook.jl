@@ -496,6 +496,9 @@ end
 # ╔═╡ a6a8ae09-87cd-4f93-8ea7-fb10c92270bb
 plot_mc_prediction_bt("AAPL", duration = 5*365, backtest = 365, num_sim = 2000)
 
+# ╔═╡ eb900396-0e23-4994-a5de-db6c180913f2
+plot_mc_prediction_bt("MSFT", duration = 5*365, backtest = 365, num_sim = 2000)
+
 # ╔═╡ 00000000-0000-0000-0000-000000000001
 PLUTO_PROJECT_TOML_CONTENTS = """
 [deps]
@@ -1107,5 +1110,6 @@ uuid = "3f19e933-33d8-53b3-aaab-bd5110c3b7a0"
 # ╠═00b556e6-015c-4d0f-9d36-8e9de84c824c
 # ╟─9548e8b3-460d-4e3c-9ba6-11ae7ab2d066
 # ╠═a6a8ae09-87cd-4f93-8ea7-fb10c92270bb
+# ╠═eb900396-0e23-4994-a5de-db6c180913f2
 # ╟─00000000-0000-0000-0000-000000000001
 # ╟─00000000-0000-0000-0000-000000000002
