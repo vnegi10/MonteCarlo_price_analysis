@@ -1,11 +1,11 @@
 ### A Pluto.jl notebook ###
-# v0.18.4
+# v0.19.22
 
 using Markdown
 using InteractiveUtils
 
 # ╔═╡ 1cddaf80-ea84-11ec-133c-7dfc20345e12
-using AlphaVantage, DataFrames, Dates, Statistics, VegaLite, Distributions, JSON, Memoization, HypothesisTests
+using AlphaVantage, DataFrames, Dates, Statistics, VegaLite, Distributions, JSON, ThreadsX, HypothesisTests
 
 # ╔═╡ 2ff8e8e5-2884-442f-acce-1555f45c100f
 md"
@@ -64,9 +64,11 @@ md"
 "
 
 # ╔═╡ 04a2d403-39b0-433e-ad0e-b162f352bad6
-@memoize function get_stock_change(stock_name::String, duration::Int64)
+function get_stock_change(stock_name::String, duration::Int64)
 
-	raw_data = time_series_daily(stock_name, datatype = "csv", outputsize = "full")
+	raw_data = time_series_daily_adjusted(stock_name, 
+		                                  datatype = "csv", 
+		                                  outputsize = "full")
 	df_raw = raw_to_df(raw_data)
 
 	rows, cols = size(df_raw)
@@ -85,9 +87,11 @@ md"
 end	
 
 # ╔═╡ bf3eaca6-4dda-4b50-88a9-3bdcb02b9772
-@memoize function get_stock_log_returns(stock_name::String, duration::Int64)
+function get_stock_log_returns(stock_name::String, duration::Int64)
 
-	raw_data = time_series_daily(stock_name, datatype = "csv", outputsize = "full")
+	raw_data = time_series_daily_adjusted(stock_name, 
+		                                  datatype = "csv", 
+		                                  outputsize = "full")
 	df_raw = raw_to_df(raw_data)
 
 	rows, cols = size(df_raw)
@@ -101,7 +105,7 @@ end
 	μ = Statistics.mean(change)
 	σ = Statistics.std(change)
 
-	# Correct for length before isnerting new column
+	# Correct for length before inserting new column
 	deleteat!(df_duration, 1)
 	insertcols!(df_duration, :Date, :log_return => change, after = true)
 
@@ -109,7 +113,7 @@ end
 end	
 
 # ╔═╡ 2b40fa19-4320-4de8-a5b6-66e011eed03e
-@time get_stock_log_returns("MSFT", 5*365);
+@time get_stock_log_returns("TSLA", 180);
 
 # ╔═╡ a4f7c9da-ea71-4582-92a7-6de50fd4de5d
 function plot_log_returns_distribution(stock_name::String, duration::Int64)
@@ -120,7 +124,8 @@ function plot_log_returns_distribution(stock_name::String, duration::Int64)
 
 	# Check if log returns have a normal distribution using a Kolmogorov–Smirnov test
 	test_result = ExactOneSampleKSTest(log_returns, 
-	              Normal(Statistics.mean(log_returns), Statistics.std(log_returns)))
+	                                   Normal(Statistics.mean(log_returns), 
+					                   Statistics.std(log_returns)))
 
 	p_value = pvalue(test_result)
 
@@ -141,7 +146,7 @@ end
 plot_log_returns_distribution("MRNA", 1*365)
 
 # ╔═╡ 0b227807-e7ee-417f-9c2b-96e281aee639
-results = get_stock_log_returns("AAPL", 10)
+results = get_stock_change("TSLA", 30)
 
 # ╔═╡ 3e35912d-a7ba-4411-b7f8-96cfc5d9e3a3
 df_close, μ, σ = results[1], results[2], results[3];
@@ -153,8 +158,10 @@ md"
 "
 
 # ╔═╡ 19a5209f-2693-42a3-8c3a-10201c6c551a
-function run_mc_simulation(df_close::DataFrame, num_sim::Int64, 
-	                       days_to_sim::Int64, mean::Float64,
+function run_mc_simulation(df_close::DataFrame, 
+	                       num_sim::Int64, 
+	                       days_to_sim::Int64, 
+	                       mean::Float64,
                            std_dev::Float64)
 	
 	df_predict  = DataFrame()	
@@ -190,8 +197,9 @@ function run_mc_simulation(df_close::DataFrame, num_sim::Int64,
 		if isempty(df_predict)
 			df_predict = DataFrame("Date" => dates, "close_$(i)" => close_price)
 		else
-			df_to_join = DataFrame("Date" => dates, "close_$(i)" => close_price)
-			df_predict = innerjoin(df_predict, df_to_join, on = :Date)
+			insertcols!(df_predict, 
+				        ncol(df_predict) + 1, 
+				        "close_$(i)" => close_price)
 		end
 		
 	end
@@ -239,8 +247,9 @@ function run_mc_simulation_GBM(df_close::DataFrame, num_sim::Int64,
 		if isempty(df_predict)
 			df_predict = DataFrame("Date" => dates, "close_$(i)" => close_price)
 		else
-			df_to_join = DataFrame("Date" => dates, "close_$(i)" => close_price)
-			df_predict = innerjoin(df_predict, df_to_join, on = :Date)
+			insertcols!(df_predict, 
+				        ncol(df_predict) + 1, 
+				        "close_$(i)" => close_price)
 		end
 		
 	end
@@ -274,8 +283,172 @@ function run_mc_simulation_only_final_GBM(df_close::DataFrame, num_sim::Int64,
 	return df_predict	
 end
 
+# ╔═╡ c03fc351-e213-4402-935c-deacc7721c27
+md"
+##### Testing parallel calculations using an array
+"
+
+# ╔═╡ 55f2d0b6-8354-402e-9d80-27ff1ebfb188
+function calculate_final_price(close_price::Float64,
+	                           days_to_sim::Int64,
+                               mean::Float64,
+                           	   std_dev::Float64)
+
+	new_close_price = close_price
+		
+	for j = 1:days_to_sim
+		change_in_percentage = rand(Normal(mean, std_dev), 1)[1]
+		new_close_price = new_close_price * (1 + change_in_percentage/100)
+	end	
+
+	return new_close_price
+end
+
+# ╔═╡ bd1a2071-f750-49e6-b198-68bad92eda08
+function run_mc_simulation_serial(df_close::DataFrame, 
+	                       			num_sim::Int64, 
+	                       			days_to_sim::Int64, 
+	                       			mean::Float64,
+                           			std_dev::Float64)
+
+	close_price  = df_close[!, :close][end]
+	final_prices = fill(close_price, num_sim)
+
+	return map(x -> calculate_final_price(x, 
+	                                      days_to_sim,
+		                                  mean,
+		                                  std_dev), final_prices)
+	
+end
+
+# ╔═╡ 2ac64aa3-4da8-4b66-8477-75480b798318
+function run_mc_simulation_parallel(df_close::DataFrame, 
+	                       			num_sim::Int64, 
+	                       			days_to_sim::Int64, 
+	                       			mean::Float64,
+                           			std_dev::Float64)
+
+	close_price  = df_close[!, :close][end]
+	final_prices = fill(close_price, num_sim)
+
+	return ThreadsX.map(x -> calculate_final_price(x, 
+	                                      		   days_to_sim,
+		                                           mean,
+		                                           std_dev), final_prices)
+	
+end
+
+# ╔═╡ 58b920f5-1dc3-4ac6-9fed-82072219fa8a
+md"
+##### Testing parallel calculations using a DataFrame
+"
+
+# ╔═╡ 302a830d-2e8d-43fa-820d-6af8b37bf3ec
+function calculate_final_price_df(col,
+	                           	  days_to_sim::Int64,
+                                  mean::Float64,
+                           	      std_dev::Float64)
+
+	new_close_price = col[1]
+		
+	for j = 2:days_to_sim + 1
+		change_in_percentage = rand(Normal(mean, std_dev), 1)[1]
+		col[j] = new_close_price * (1 + change_in_percentage/100)
+		new_close_price = col[j]
+	end	
+
+	return col
+end
+
+# ╔═╡ 3ac0aaf5-73f5-40b5-876d-d3ee9b18c632
+function run_mc_simulation_serial_df(df_close::DataFrame, 
+	                       			 num_sim::Int64, 
+	                       			 days_to_sim::Int64, 
+	                       			 mean::Float64,
+                           			 std_dev::Float64)
+
+	close_price  = df_close[!, :close][end]
+	close_column = fill(close_price, days_to_sim + 1)
+	col_names    = ["close_$(i)" for i ∈ 1:num_sim]
+
+	df_predict = DataFrame(col_names .=> [close_column for _ in eachindex(col_names)])
+
+	predict    = map(col -> calculate_final_price_df(col, 
+	                                           days_to_sim,
+		                                       mean,
+		                                       std_dev), eachcol(df_predict))
+
+	df_predict = zip(col_names, predict) |> Dict |> DataFrame
+	
+end
+
+# ╔═╡ dd6f21c2-3ddd-4db6-ae69-724962b0b71e
+function run_mc_simulation_parallel_df(df_close::DataFrame, 
+	                       			 num_sim::Int64, 
+	                       			 days_to_sim::Int64, 
+	                       			 mean::Float64,
+                           			 std_dev::Float64)
+
+	close_price  = df_close[!, :close][end]
+	close_column = fill(close_price, days_to_sim + 1)
+	col_names    = ["close_$(i)" for i ∈ 1:num_sim]
+
+	df_predict = DataFrame(col_names .=> [close_column for _ in eachindex(col_names)])
+
+	predict    = ThreadsX.map(col -> calculate_final_price_df(col, 
+	                                           				  days_to_sim,
+		                                       				  mean,
+		                                       			std_dev), eachcol(df_predict))
+
+	df_predict = zip(col_names, predict) |> Dict |> DataFrame
+	
+end
+
+# ╔═╡ 4a8f053b-7cd0-484b-aa77-ddc123fa8798
+#=@time df_predict_serial = run_mc_simulation_serial_df(df_close,
+	                                                  num_sim, 
+	                                            	  days_to_sim, 
+	                                            	  μ, 
+	                                            	  σ)=#
+
 # ╔═╡ 686340c1-15a8-4d3a-91b6-3e4020a7e93f
-df_predict = run_mc_simulation_GBM(df_close, 5, 11, μ, σ)
+#@time df_predict = run_mc_simulation(df_close, num_sim, days_to_sim, μ, σ)
+
+# ╔═╡ 668aabd7-64b9-4d92-92ee-64972af8d90c
+#=@time final_prices_serial = run_mc_simulation_serial(df_close, 
+	                                            	 num_sim, 
+	                                            	 days_to_sim, 
+	                                            	 μ, 
+	                                            	 σ)=#
+
+# ╔═╡ 7932549b-58db-4429-9dcf-9e1be87a57f0
+Threads.nthreads()
+
+# ╔═╡ b29989d9-09b9-470c-ada8-3eaadb629640
+begin
+	num_sim = 20_000_000
+	days_to_sim = 30
+end
+
+# ╔═╡ f8d74abe-5d0d-4d0c-9b2e-9de584b5edd4
+@time final_prices_parallel = run_mc_simulation_parallel(df_close, 
+	                                            	 	 num_sim, 
+	                                            	 	 days_to_sim, 
+	                                            	 	 μ, 
+	                                            	 	 σ)
+
+# ╔═╡ 642e5fc6-a5f3-4c01-adef-4b40498c746c
+begin
+	predicted_closing_price = sum(final_prices_parallel)/num_sim
+	known_closing_price     = df_close[!, :close][end]
+	
+	predicted_change = ((predicted_closing_price - 
+		                 known_closing_price) / known_closing_price) * 100
+	
+	println("Avg. predicted price = $(round(predicted_closing_price, digits = 2)),
+			 change = $(round(predicted_change, digits = 2)) %, 
+			 calculated after $(days_to_sim) days")
+end
 
 # ╔═╡ effbb61d-2a29-4909-80e3-caf0626daee3
 function get_mc_avg(df_predict::DataFrame)
@@ -296,8 +469,10 @@ md"
 "
 
 # ╔═╡ ee9081ad-132f-4d85-9c69-0a6a26594e91
-function plot_mc_prediction(stock_name::String; duration::Int64 = 180,
-                            num_sim::Int64 = 200, days_to_sim::Int64 = 30)
+function plot_mc_prediction(stock_name::String; 
+                            duration::Int64 = 180,
+                            num_sim::Int64 = 200, 
+                            days_to_sim::Int64 = 30)
 
 	results = get_stock_change(stock_name, duration)
 	df_close, μ, σ = results[1], results[2], results[3]	
@@ -316,7 +491,8 @@ function plot_mc_prediction(stock_name::String; duration::Int64 = 180,
 
 	# Add average price column to DataFrame with predicted prices
 	if "close_avg" ∉ names(df_predict)
-		insertcols!(df_predict, :Date, :close_avg => df_avg[!, :close_avg], 
+		insertcols!(df_predict, :Date, 
+			        :close_avg => df_avg[!, :close_avg], 
 			        after = true)
 	end
 	
@@ -326,9 +502,19 @@ function plot_mc_prediction(stock_name::String; duration::Int64 = 180,
 	figure = sdf_predict |>
 
 	@vlplot(:line, 
-	        x = {:Date, "axis" = {"title" = "Time [days]", "labelFontSize" = 12, "titleFontSize" = 14}, "type" = "temporal"},
-	        width = 750, height = 500, 
-			"title" = {"text" = "$(stock_name) predicted price is $(round(predicted_closing_price, digits = 2)), hist. duration = $(duration) days, change = $(round(predicted_change, digits = 2)) %, calculated after $(days_to_sim) days", "fontSize" = 16},
+	        x = {:Date, 
+		         "axis" = {"title" = "Time [days]", 
+				           "labelFontSize" = 12, 
+						   "titleFontSize" = 14}, 
+	                       "type" = "temporal"},
+				 width = 750, 
+				 height = 500, 
+				"title" = {"text" = "$(stock_name) predicted price is
+				                     $(round(predicted_closing_price, digits = 2)), 
+				hist. duration = $(duration) days, 
+				change = $(round(predicted_change, digits = 2)) %, 
+				calculated after $(days_to_sim) days", 
+				"fontSize" = 16},
 			) +
 
 	@vlplot(:line, 
@@ -387,10 +573,7 @@ function plot_mc_prediction_GBM(stock_name::String; duration::Int64 = 180,
 end	
 
 # ╔═╡ 8398a7ec-650c-4d1a-a63f-9d70d0ae6355
-@time plot_mc_prediction("MSFT", duration = 2*365, num_sim = 1000, days_to_sim = 30)
-
-# ╔═╡ aa6d8740-339f-40ac-a3b9-59fc3d754c72
-plot_mc_prediction_GBM("MSFT", duration = 2*365, num_sim = 1000, days_to_sim = 30)
+#@time plot_mc_prediction("MSFT", duration = 2*365, num_sim = 5000, days_to_sim = 30)
 
 # ╔═╡ 0a98ae67-26c7-4bdb-af24-07be0d222c0a
 #plot_mc_prediction("AMD", duration = 1*365, num_sim = 1000, days_to_sim = 180)
@@ -405,38 +588,55 @@ md"
 "
 
 # ╔═╡ 415a1ca7-8227-4275-a7c4-1fdbfda7b071
-function plot_mc_distribution(stock_name::String; duration::Int64 = 180,
-                            num_sim::Int64 = 200, days_to_sim::Int64 = 30)
+function plot_mc_distribution(stock_name::String; 
+                              duration::Int64 = 180,
+                              num_sim::Int64 = 200, 
+                              days_to_sim::Int64 = 30)
 
 	results = get_stock_change(stock_name, duration)
 	df_close, μ, σ = results[1], results[2], results[3]		
 
-	df_predict = run_mc_simulation(df_close, num_sim, days_to_sim, μ, σ)
+	df_predict = run_mc_simulation(df_close, 
+		                           num_sim, 
+		                           days_to_sim, 
+		                           μ, 
+		                           σ)
 
 	predicted_closing_price = sum(df_predict[end, :][2:end])/num_sim
 	known_closing_price     = df_close[!, :close][end]
 
 	predicted_change = ((predicted_closing_price - 
-	                       known_closing_price)/known_closing_price) * 100
+	                     known_closing_price) / known_closing_price) * 100
 
 	# Collect prices from last row for plotting histogram
-	df_last_row = df_predict[end, 2:end]
-	final_prices = Float64[]
+	df_last_row  = df_predict[end, 2:end]
+	final_prices = vcat(df_last_row...)
 	
-	for i = 1:num_sim
-		push!(final_prices, df_last_row[i])
-	end
-
-	df_final_price = DataFrame(sim_number = names(df_last_row), 
-		                       final_prices = final_prices)	
+	df_final_price = DataFrame(final_prices = final_prices)	
 
 	figure = df_final_price |>
 
 	@vlplot(:bar, 
-	        x = {:final_prices, "axis" = {"title" = "Final predicted price [USD]", "labelFontSize" = 12, "titleFontSize" = 14}, "bin" = {"maxbins" = 50}},
-	        y = {"count()", "axis" = {"title" = "Number of counts", "labelFontSize" = 12, "titleFontSize" = 14}},
-	        width = 750, height = 500, 
-			"title" = {"text" = "$(stock_name) distribution, hist. duration = $(duration) days, avg. predicted price = $(round(predicted_closing_price, digits = 2)), change = $(round(predicted_change, digits = 2)) %, calculated after $(days_to_sim) days", "fontSize" = 16})
+	        x = {:final_prices, 
+		         "axis" = {"title" = "Final predicted price [USD]", 
+				           "labelFontSize" = 12, 
+						   "titleFontSize" = 12}, 
+	             "bin" = {"maxbins" = 50}},
+				 
+	        y = {"count()", 
+			     "axis" = {"title" = "Number of counts", 
+				           "labelFontSize" = 12, 
+						   "titleFontSize" = 12}},
+						   
+	        width = 750, 
+			height = 500, 
+			"title" = {"text" = "$(stock_name) distribution, 
+			            hist. duration = $(duration) days, 
+			            avg. predicted price = $(round(predicted_closing_price,
+							                                       digits = 2)),
+			            change = $(round(predicted_change, digits = 2)) %, 
+			            calculated after $(days_to_sim) days", 
+			            "fontSize" = 12})
 
 	return figure
 end	
@@ -469,16 +669,19 @@ function plot_mc_distribution_GBM(stock_name::String; duration::Int64 = 180,
 end	
 
 # ╔═╡ f87be5e1-c992-48bd-81d1-872d17514886
-@time plot_mc_distribution_GBM("MSFT", duration = 1*365, num_sim = 100_000, days_to_sim = 30)
+#=@time plot_mc_distribution("MSFT", 
+	                        duration = 2*365, 
+	                        num_sim = 500_000, 
+	                        days_to_sim = 30)=#
 
 # ╔═╡ e635c722-bda3-467f-bebe-a3a97a5e0326
-@time plot_mc_distribution_GBM("AMD", duration = 1*365, num_sim = 100_000, days_to_sim = 30)
+#@time plot_mc_distribution_GBM("AMD", duration = 1*365, num_sim = 100_000, days_to_sim = 30)
 
 # ╔═╡ 8558523b-b1d0-40ba-b060-2ccba0ad835d
-@time plot_mc_distribution_GBM("AAPL", duration = 1*365, num_sim = 100_000, days_to_sim = 30)
+#@time plot_mc_distribution_GBM("AAPL", duration = 1*365, num_sim = 100_000, days_to_sim = 30)
 
 # ╔═╡ 4e9056b3-82e8-47c1-9829-c9b7c7aa082c
-@time plot_mc_distribution_GBM("MRNA", duration = 1*365, num_sim = 500_000, days_to_sim = 30)
+#@time plot_mc_distribution_GBM("MRNA", duration = 1*365, num_sim = 500_000, days_to_sim = 30)
 
 # ╔═╡ 8e6a9a18-a1c5-42b8-a5b6-0ee66d79b3aa
 md"
@@ -562,18 +765,6 @@ function get_mc_avg_bt(df_predict::DataFrame)
 	return df_avg_bt
 end	
 
-# ╔═╡ 5343d494-caa6-4dbf-aa3f-3aaccf3b4013
-df_close_bt = get_stock_change_bt("AAPL", 20, 5)[1];
-
-# ╔═╡ 30dde1da-33aa-4b3e-a4ce-48c158238615
-df_raw_bt = get_stock_change_bt("AAPL", 20, 5)[2];
-
-# ╔═╡ 26c13a9d-d378-4101-b5d0-ba1d5f65ab5b
-df_predict_bt = run_mc_simulation_bt(df_close_bt, df_raw_bt, 5, 5, μ, σ)
-
-# ╔═╡ 00b556e6-015c-4d0f-9d36-8e9de84c824c
-df_avg_bt = get_mc_avg_bt(df_predict_bt)
-
 # ╔═╡ 9548e8b3-460d-4e3c-9ba6-11ae7ab2d066
 function plot_mc_prediction_bt(stock_name::String; duration::Int64 = 180,
                                backtest::Int64 = 30, num_sim::Int64 = 200)
@@ -601,19 +792,10 @@ function plot_mc_prediction_bt(stock_name::String; duration::Int64 = 180,
 end	
 
 # ╔═╡ a6a8ae09-87cd-4f93-8ea7-fb10c92270bb
-plot_mc_prediction_bt("AAPL", duration = 5*365, backtest = 365, num_sim = 10_000)
+#plot_mc_prediction_bt("AAPL", duration = 5*365, backtest = 365, num_sim = 10_000)
 
 # ╔═╡ eb900396-0e23-4994-a5de-db6c180913f2
-plot_mc_prediction_bt("MSFT", duration = 5*365, backtest = 365, num_sim = 2000)
-
-# ╔═╡ 1807a505-839f-4b26-b779-882362ff9fc3
-
-
-# ╔═╡ 53dc495e-77b6-4e6b-aa18-49042d378ccc
-
-
-# ╔═╡ b2585384-c2ec-4edb-8349-3c60c8302d4d
-
+#plot_mc_prediction_bt("MSFT", duration = 5*365, backtest = 365, num_sim = 2000)
 
 # ╔═╡ 00000000-0000-0000-0000-000000000001
 PLUTO_PROJECT_TOML_CONTENTS = """
@@ -624,8 +806,8 @@ Dates = "ade2ca70-3891-5945-98fb-dc099432e06a"
 Distributions = "31c24e10-a181-5473-b8eb-7969acd0382f"
 HypothesisTests = "09f84164-cd44-5f33-b23f-e6b0d136a0d5"
 JSON = "682c06a0-de6a-54ab-a142-c8b1cf79cde6"
-Memoization = "6fafb56a-5788-4b4e-91ca-c0cea6611c73"
 Statistics = "10745b16-79ce-11e8-11f9-7d13ad32a3b2"
+ThreadsX = "ac1d9e8a-700a-412c-b207-f0111f4b6c0d"
 VegaLite = "112f6efa-9a02-5b7d-90c0-432ed331239a"
 
 [compat]
@@ -634,7 +816,7 @@ DataFrames = "~1.3.4"
 Distributions = "~0.25.62"
 HypothesisTests = "~0.10.10"
 JSON = "~0.21.3"
-Memoization = "~0.1.14"
+ThreadsX = "~0.1.11"
 VegaLite = "~2.6.0"
 """
 
@@ -642,8 +824,15 @@ VegaLite = "~2.6.0"
 PLUTO_MANIFEST_TOML_CONTENTS = """
 # This file is machine-generated - editing it directly is not advised
 
-julia_version = "1.7.2"
+julia_version = "1.8.5"
 manifest_format = "2.0"
+project_hash = "bd14fd2f4bfb65b079f577f95361b0cb5001d016"
+
+[[deps.Adapt]]
+deps = ["LinearAlgebra"]
+git-tree-sha1 = "0310e08cb19f5da31d08341c6120c047598f5b9c"
+uuid = "79e6a3ab-5dfb-504d-930d-738a2a938a0e"
+version = "3.5.0"
 
 [[deps.AlphaVantage]]
 deps = ["ArgCheck", "Compat", "DelimitedFiles", "HTTP", "HttpCommon", "JSON", "Tables"]
@@ -658,12 +847,24 @@ version = "2.3.0"
 
 [[deps.ArgTools]]
 uuid = "0dad84c5-d112-42e6-8d28-ef12dabb789f"
+version = "1.1.1"
 
 [[deps.Artifacts]]
 uuid = "56f22d72-fd6d-98f1-02f0-08ddc0907c33"
 
+[[deps.BangBang]]
+deps = ["Compat", "ConstructionBase", "Future", "InitialValues", "LinearAlgebra", "Requires", "Setfield", "Tables", "ZygoteRules"]
+git-tree-sha1 = "7fe6d92c4f281cf4ca6f2fba0ce7b299742da7ca"
+uuid = "198e06fe-97b7-11e9-32a5-e1d131e6ad66"
+version = "0.3.37"
+
 [[deps.Base64]]
 uuid = "2a0f44e3-6c83-55bd-87e4-b1978d98bd5f"
+
+[[deps.Baselet]]
+git-tree-sha1 = "aebf55e6d7795e02ca500a689d326ac979aaf89e"
+uuid = "9718e550-a3fa-408a-8086-8db961cd8217"
+version = "0.1.1"
 
 [[deps.Calculus]]
 deps = ["LinearAlgebra"]
@@ -702,6 +903,12 @@ version = "3.45.0"
 [[deps.CompilerSupportLibraries_jll]]
 deps = ["Artifacts", "Libdl"]
 uuid = "e66e0078-7015-5450-92f7-15fbd957f2ae"
+version = "1.0.1+0"
+
+[[deps.CompositionsBase]]
+git-tree-sha1 = "455419f7e328a1a2493cabc6428d79e951349769"
+uuid = "a33af91c-f02d-484b-be07-31d278c5ca2b"
+version = "0.1.1"
 
 [[deps.ConstructionBase]]
 deps = ["LinearAlgebra"]
@@ -746,6 +953,11 @@ version = "0.4.13"
 deps = ["Printf"]
 uuid = "ade2ca70-3891-5945-98fb-dc099432e06a"
 
+[[deps.DefineSingletons]]
+git-tree-sha1 = "0fba8b706d0178b4dc7fd44a96a92382c9065c2c"
+uuid = "244e2a9f-e319-4986-a169-4d1fe445cd52"
+version = "0.1.2"
+
 [[deps.DelimitedFiles]]
 deps = ["Mmap"]
 uuid = "8bb1440f-4735-579b-a4ab-409b98df4dab"
@@ -773,8 +985,9 @@ uuid = "ffbed154-4ef7-542d-bbb7-c09d3a79fcae"
 version = "0.8.6"
 
 [[deps.Downloads]]
-deps = ["ArgTools", "LibCURL", "NetworkOptions"]
+deps = ["ArgTools", "FileWatching", "LibCURL", "NetworkOptions"]
 uuid = "f43a241f-c20a-4ad4-852c-f6b1247861c6"
+version = "1.6.0"
 
 [[deps.DualNumbers]]
 deps = ["Calculus", "NaNMath", "SpecialFunctions"]
@@ -799,6 +1012,9 @@ deps = ["Compat", "Dates", "Mmap", "Printf", "Test", "UUIDs"]
 git-tree-sha1 = "129b104185df66e408edd6625d480b7f9e9823a0"
 uuid = "48062228-2e41-5def-b9a4-89aafe57970f"
 version = "0.9.18"
+
+[[deps.FileWatching]]
+uuid = "7b1f6079-737a-58dc-b8bc-7a2ca5c1b5ee"
 
 [[deps.FillArrays]]
 deps = ["LinearAlgebra", "Random", "SparseArrays", "Statistics"]
@@ -844,6 +1060,11 @@ version = "0.10.10"
 git-tree-sha1 = "f550e6e32074c939295eb5ea6de31849ac2c9625"
 uuid = "83e8ac13-25f8-5344-8a64-a9f2b223428f"
 version = "0.5.1"
+
+[[deps.InitialValues]]
+git-tree-sha1 = "4da0f88e9a39111c2fa3add390ab15f3a44f3ca3"
+uuid = "22cec73e-a1b8-11e9-2c92-598750a2cf9c"
+version = "0.3.1"
 
 [[deps.InteractiveUtils]]
 deps = ["Markdown"]
@@ -891,10 +1112,12 @@ version = "0.3.4"
 [[deps.LibCURL]]
 deps = ["LibCURL_jll", "MozillaCACerts_jll"]
 uuid = "b27032c2-a3e7-50c8-80cd-2d36dbcbfd21"
+version = "0.6.3"
 
 [[deps.LibCURL_jll]]
 deps = ["Artifacts", "LibSSH2_jll", "Libdl", "MbedTLS_jll", "Zlib_jll", "nghttp2_jll"]
 uuid = "deac9b47-8bc7-5906-a0fe-35ac56dc84c0"
+version = "7.84.0+0"
 
 [[deps.LibGit2]]
 deps = ["Base64", "NetworkOptions", "Printf", "SHA"]
@@ -903,6 +1126,7 @@ uuid = "76f85450-5226-5b5a-8eaa-529ad045b433"
 [[deps.LibSSH2_jll]]
 deps = ["Artifacts", "Libdl", "MbedTLS_jll"]
 uuid = "29816b5a-b9ab-546f-933c-edad1886dfa8"
+version = "1.10.2+0"
 
 [[deps.Libdl]]
 uuid = "8f399da3-3557-5675-b5ff-fb832c97cbdb"
@@ -939,12 +1163,13 @@ version = "1.0.3"
 [[deps.MbedTLS_jll]]
 deps = ["Artifacts", "Libdl"]
 uuid = "c8ffd9c3-330d-5841-b78e-0817d7145fa1"
+version = "2.28.0+0"
 
-[[deps.Memoization]]
-deps = ["MacroTools"]
-git-tree-sha1 = "55dc27dc3d663900d1d768822528960acadc012a"
-uuid = "6fafb56a-5788-4b4e-91ca-c0cea6611c73"
-version = "0.1.14"
+[[deps.MicroCollections]]
+deps = ["BangBang", "InitialValues", "Setfield"]
+git-tree-sha1 = "4d5917a26ca33c66c8e5ca3247bd163624d35493"
+uuid = "128add7d-3638-4c79-886c-908ea0c25c34"
+version = "0.1.3"
 
 [[deps.Missings]]
 deps = ["DataAPI"]
@@ -957,6 +1182,7 @@ uuid = "a63ad114-7e13-5084-954f-fe012c677804"
 
 [[deps.MozillaCACerts_jll]]
 uuid = "14a3606d-f60d-562e-9121-12d972cd8159"
+version = "2022.2.1"
 
 [[deps.NaNMath]]
 git-tree-sha1 = "737a5957f387b17e74d4ad2f440eb330b39a62c5"
@@ -965,6 +1191,7 @@ version = "1.0.0"
 
 [[deps.NetworkOptions]]
 uuid = "ca575930-c2e3-43a9-ace4-1e988b2c1908"
+version = "1.2.0"
 
 [[deps.NodeJS]]
 deps = ["Pkg"]
@@ -980,10 +1207,12 @@ version = "1.0.0"
 [[deps.OpenBLAS_jll]]
 deps = ["Artifacts", "CompilerSupportLibraries_jll", "Libdl"]
 uuid = "4536629a-c528-5b80-bd46-f80d51c5b363"
+version = "0.3.20+0"
 
 [[deps.OpenLibm_jll]]
 deps = ["Artifacts", "Libdl"]
 uuid = "05823500-19ac-5b8b-9628-191a04bc5112"
+version = "0.8.1+0"
 
 [[deps.OpenSpecFun_jll]]
 deps = ["Artifacts", "CompilerSupportLibraries_jll", "JLLWrappers", "Libdl", "Pkg"]
@@ -1011,6 +1240,7 @@ version = "2.3.1"
 [[deps.Pkg]]
 deps = ["Artifacts", "Dates", "Downloads", "LibGit2", "Libdl", "Logging", "Markdown", "Printf", "REPL", "Random", "SHA", "Serialization", "TOML", "Tar", "UUIDs", "p7zip_jll"]
 uuid = "44cfe95a-1eb2-52ea-b672-e2afdf69b78f"
+version = "1.8.0"
 
 [[deps.PooledArrays]]
 deps = ["DataAPI", "Future"]
@@ -1053,6 +1283,12 @@ git-tree-sha1 = "45e428421666073eab6f2da5c9d310d99bb12f9b"
 uuid = "189a3867-3050-52da-a836-e630ba90ab69"
 version = "1.2.2"
 
+[[deps.Referenceables]]
+deps = ["Adapt"]
+git-tree-sha1 = "e681d3bfa49cd46c3c161505caddf20f0e62aaa9"
+uuid = "42d2dcc6-99eb-4e98-b66c-637b7d73030e"
+version = "0.1.2"
+
 [[deps.Requires]]
 deps = ["UUIDs"]
 git-tree-sha1 = "838a3a4188e2ded87a4f9f184b4b0d78a1e91cb7"
@@ -1079,6 +1315,7 @@ version = "2.0.1"
 
 [[deps.SHA]]
 uuid = "ea8e919c-243c-51af-8825-aaa63cd721ce"
+version = "0.7.0"
 
 [[deps.Serialization]]
 uuid = "9e88b42a-f829-5b0c-bbe9-9e923198166b"
@@ -1112,6 +1349,12 @@ git-tree-sha1 = "a9e798cae4867e3a41cae2dd9eb60c047f1212db"
 uuid = "276daf66-3868-5448-9aa4-cd146d93841b"
 version = "2.1.6"
 
+[[deps.SplittablesBase]]
+deps = ["Setfield", "Test"]
+git-tree-sha1 = "e08a62abc517eb79667d0a29dc08a3b589516bb5"
+uuid = "171d559e-b47b-412a-8079-5efa626c420e"
+version = "0.1.15"
+
 [[deps.Statistics]]
 deps = ["LinearAlgebra", "SparseArrays"]
 uuid = "10745b16-79ce-11e8-11f9-7d13ad32a3b2"
@@ -1141,6 +1384,7 @@ uuid = "4607b0f0-06f3-5cda-b6b1-a6196a1729e9"
 [[deps.TOML]]
 deps = ["Dates"]
 uuid = "fa267f1f-6049-4f14-aa54-33bafae1ed76"
+version = "1.0.0"
 
 [[deps.TableTraits]]
 deps = ["IteratorInterfaceExtensions"]
@@ -1163,10 +1407,23 @@ version = "1.7.0"
 [[deps.Tar]]
 deps = ["ArgTools", "SHA"]
 uuid = "a4e569a6-e804-4fa4-b0f3-eef7a1d5b13e"
+version = "1.10.1"
 
 [[deps.Test]]
 deps = ["InteractiveUtils", "Logging", "Random", "Serialization"]
 uuid = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
+
+[[deps.ThreadsX]]
+deps = ["ArgCheck", "BangBang", "ConstructionBase", "InitialValues", "MicroCollections", "Referenceables", "Setfield", "SplittablesBase", "Transducers"]
+git-tree-sha1 = "34e6bcf36b9ed5d56489600cf9f3c16843fa2aa2"
+uuid = "ac1d9e8a-700a-412c-b207-f0111f4b6c0d"
+version = "0.1.11"
+
+[[deps.Transducers]]
+deps = ["Adapt", "ArgCheck", "BangBang", "Baselet", "CompositionsBase", "DefineSingletons", "Distributed", "InitialValues", "Logging", "Markdown", "MicroCollections", "Requires", "Setfield", "SplittablesBase", "Tables"]
+git-tree-sha1 = "c42fa452a60f022e9e087823b47e5a5f8adc53d5"
+uuid = "28d57a85-8fef-5791-bfe6-a80928e7c999"
+version = "0.4.75"
 
 [[deps.URIParser]]
 deps = ["Unicode"]
@@ -1201,18 +1458,28 @@ version = "2.6.0"
 [[deps.Zlib_jll]]
 deps = ["Libdl"]
 uuid = "83775a58-1f1d-513f-b197-d71354ab007a"
+version = "1.2.12+3"
+
+[[deps.ZygoteRules]]
+deps = ["MacroTools"]
+git-tree-sha1 = "8c1a8e4dfacb1fd631745552c8db35d0deb09ea0"
+uuid = "700de1a5-db45-46bc-99cf-38207098b444"
+version = "0.2.2"
 
 [[deps.libblastrampoline_jll]]
 deps = ["Artifacts", "Libdl", "OpenBLAS_jll"]
 uuid = "8e850b90-86db-534c-a0d3-1478176c7d93"
+version = "5.1.1+0"
 
 [[deps.nghttp2_jll]]
 deps = ["Artifacts", "Libdl"]
 uuid = "8e850ede-7688-5339-a07c-302acd2aaf8d"
+version = "1.48.0+0"
 
 [[deps.p7zip_jll]]
 deps = ["Artifacts", "Libdl"]
 uuid = "3f19e933-33d8-53b3-aaab-bd5110c3b7a0"
+version = "17.4.0+0"
 """
 
 # ╔═╡ Cell order:
@@ -1234,13 +1501,26 @@ uuid = "3f19e933-33d8-53b3-aaab-bd5110c3b7a0"
 # ╟─19a5209f-2693-42a3-8c3a-10201c6c551a
 # ╟─25f85128-69ec-427e-a48b-426c532a32a8
 # ╟─e93c5e0d-f30c-4762-8f3f-a4c98f96b20e
+# ╟─c03fc351-e213-4402-935c-deacc7721c27
+# ╟─55f2d0b6-8354-402e-9d80-27ff1ebfb188
+# ╟─bd1a2071-f750-49e6-b198-68bad92eda08
+# ╟─2ac64aa3-4da8-4b66-8477-75480b798318
+# ╟─58b920f5-1dc3-4ac6-9fed-82072219fa8a
+# ╟─302a830d-2e8d-43fa-820d-6af8b37bf3ec
+# ╟─3ac0aaf5-73f5-40b5-876d-d3ee9b18c632
+# ╟─dd6f21c2-3ddd-4db6-ae69-724962b0b71e
+# ╠═4a8f053b-7cd0-484b-aa77-ddc123fa8798
 # ╠═686340c1-15a8-4d3a-91b6-3e4020a7e93f
+# ╠═668aabd7-64b9-4d92-92ee-64972af8d90c
+# ╠═f8d74abe-5d0d-4d0c-9b2e-9de584b5edd4
+# ╠═7932549b-58db-4429-9dcf-9e1be87a57f0
+# ╠═b29989d9-09b9-470c-ada8-3eaadb629640
+# ╠═642e5fc6-a5f3-4c01-adef-4b40498c746c
 # ╟─effbb61d-2a29-4909-80e3-caf0626daee3
 # ╟─6f15d7a5-b565-4bbd-948b-b02d7d489d3b
 # ╟─ee9081ad-132f-4d85-9c69-0a6a26594e91
 # ╟─087b7abe-df05-4e63-9d3b-4289f58d9c4a
 # ╠═8398a7ec-650c-4d1a-a63f-9d70d0ae6355
-# ╠═aa6d8740-339f-40ac-a3b9-59fc3d754c72
 # ╠═0a98ae67-26c7-4bdb-af24-07be0d222c0a
 # ╠═4fc4819f-5994-479d-b01f-bf1acb4d4fb9
 # ╟─dcb81a30-b89b-4f4e-a49e-7132d9489dad
@@ -1254,15 +1534,8 @@ uuid = "3f19e933-33d8-53b3-aaab-bd5110c3b7a0"
 # ╟─4c2878ee-5a0b-4f67-aebd-ecd77919e200
 # ╟─5d27d50e-1b8b-450f-988f-bb94153e3b4d
 # ╟─48c0a535-8163-46a4-bb1f-58ce5d67aeb0
-# ╠═5343d494-caa6-4dbf-aa3f-3aaccf3b4013
-# ╠═30dde1da-33aa-4b3e-a4ce-48c158238615
-# ╠═26c13a9d-d378-4101-b5d0-ba1d5f65ab5b
-# ╠═00b556e6-015c-4d0f-9d36-8e9de84c824c
 # ╟─9548e8b3-460d-4e3c-9ba6-11ae7ab2d066
 # ╠═a6a8ae09-87cd-4f93-8ea7-fb10c92270bb
 # ╠═eb900396-0e23-4994-a5de-db6c180913f2
-# ╠═1807a505-839f-4b26-b779-882362ff9fc3
-# ╠═53dc495e-77b6-4e6b-aa18-49042d378ccc
-# ╠═b2585384-c2ec-4edb-8349-3c60c8302d4d
 # ╟─00000000-0000-0000-0000-000000000001
 # ╟─00000000-0000-0000-0000-000000000002
